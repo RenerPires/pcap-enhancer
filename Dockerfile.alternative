@@ -1,0 +1,91 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base tools first
+RUN apt-get update && \
+    apt-get install -y \
+        curl \
+        wget \
+        gnupg2 \
+        ca-certificates \
+        git \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        libpcap-dev \
+        libjson-c-dev \
+        libnuma-dev \
+        libgcrypt20-dev \
+        libgpg-error-dev \
+        tshark \
+        python3 \
+        python3-pip \
+        tcpdump && \
+    pip3 install pandas && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build and install nDPI 5.0
+RUN cd /tmp && \
+    git clone --depth 1 --branch 5.0 https://github.com/ntop/nDPI.git && \
+    cd nDPI && \
+    ./autogen.sh && \
+    ./configure --prefix=/usr/local && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd / && \
+    rm -rf /tmp/nDPI
+
+# Try to install Zeek from binary package (fallback method)
+# Download and install Zeek binary package
+RUN ZEEK_VERSION=6.0.0 && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        ZEEK_ARCH="x86_64"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        ZEEK_ARCH="aarch64"; \
+    else \
+        echo "Unsupported architecture: $ARCH"; \
+        exit 1; \
+    fi && \
+    cd /tmp && \
+    wget -q https://github.com/zeek/zeek/releases/download/v${ZEEK_VERSION}/zeek-${ZEEK_VERSION}-Linux-${ZEEK_ARCH}.tar.gz && \
+    tar -xzf zeek-${ZEEK_VERSION}-Linux-${ZEEK_ARCH}.tar.gz && \
+    mv zeek-${ZEEK_VERSION}-Linux-${ZEEK_ARCH} /usr/local/zeek && \
+    cd / && \
+    rm -rf /tmp/zeek-* && \
+    echo 'export PATH=/usr/local/zeek/bin:$PATH' >> /etc/profile.d/zeek.sh
+
+# Install p0f (try package manager first, then build from source if needed)
+RUN apt-get update && \
+    (apt-get install -y p0f || \
+     (cd /tmp && \
+      wget -q https://github.com/p0f/p0f/archive/refs/heads/master.zip && \
+      apt-get install -y unzip build-essential libpcap-dev && \
+      unzip -q master.zip && \
+      cd p0f-master && \
+      make && \
+      cp p0f /usr/local/bin/ && \
+      cd / && \
+      rm -rf /tmp/p0f-* /tmp/master.zip)) && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add Zeek to PATH
+ENV PATH="/usr/local/zeek/bin:${PATH}"
+
+WORKDIR /workspace
+
+# Copy scripts into the image
+COPY analyze_pcap.sh /usr/local/bin/analyze_pcap.sh
+COPY enrich_pcap.py /usr/local/bin/enrich_pcap.py
+COPY mac_oui_lookup.py /usr/local/bin/mac_oui_lookup.py
+COPY device_fingerprint.py /usr/local/bin/device_fingerprint.py
+
+RUN chmod +x /usr/local/bin/analyze_pcap.sh /usr/local/bin/mac_oui_lookup.py /usr/local/bin/device_fingerprint.py
+
+ENTRYPOINT ["/bin/bash"]
+
